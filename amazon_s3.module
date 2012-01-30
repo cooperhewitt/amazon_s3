@@ -1,0 +1,874 @@
+<?php
+
+/*Hooks*/
+
+/**
+ * Implementation of hook_init()
+ */
+function amazon_s3_init() {
+  drupal_add_css(drupal_get_path('module', 'amazon_s3') . '/amazon_s3.css');
+}
+
+/**
+ * Implementation of hook_menu()
+ */
+function amazon_s3_menu() {
+  
+  $items['admin/settings/amazon-s3'] = array(
+    'title' => 'Amazon S3 Configuration',
+    'description' => t('Authentication settings for Amazon S3'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('amazon_s3_config_form'),
+    'access arguments' => array('administer amazon s3'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  
+  $items['admin/build/amazon-s3'] = array(
+    'title' => 'Amazon S3 Buckets',
+    'description' => t('View the buckets on your Amazon S3 account.'),
+    'page callback' => 'amazon_s3_view_buckets',
+    'access arguments' => array('administer amazon s3'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  
+  $items['admin/build/amazon-s3/bucket/%'] = array(
+    'title' => 'Bucket Contents',
+    'description' => t('View the objects in a bucket on your Amazon S3 account.'),
+    'page callback' => 'amazon_s3_view_objects',
+    'page arguments' => array(4),
+    'access arguments' => array('administer amazon s3'),
+    'type' => MENU_CALLBACK,
+  );
+  
+  $items['admin/build/amazon-s3/bucket/%/delete'] = array(
+    'title' => 'Delete Bucket',
+    'description' => t('Delete a bucket.'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('amazon_s3_bucket_delete_confirm_form', 4),
+    'access arguments' => array('administer amazon s3'),
+    'type' => MENU_CALLBACK, 
+  );
+  
+  $items['admin/build/amazon-s3/bucket/%/%/delete'] = array(
+    'title' => 'Delete Object in Bucket',
+    'description' => t('Delete an object in a bucket.'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('amazon_s3_object_delete_confirm_form', 4, 5),
+    'access arguments' => array('administer amazon s3'),
+    'type' => MENU_CALLBACK,
+  );
+
+  /*$items['admin/build/amazon-s3/bucket/%/%/%/%/%/delete'] = array(
+    'title' => 'Delete Objects in Bucket',
+    'description' => t('Delete an object in a bucket.'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('amazon_s3_object_delete_confirm_form', 4, 5, 6, 7, 8),
+    'access arguments' => array('administer amazon s3'),
+    'type' => MENU_CALLBACK,
+  );*/
+
+  return $items;
+}
+
+
+/**
+ * Implementation of hook_perm()
+ */
+function amazon_s3_perm() {
+  return array('administer amazon s3');
+}
+
+/*Amazon S3 API Functions*/
+/**
+ * Get the instance of the s3 object.
+ *
+ * @return S3
+ */
+function amazon_s3_get_instance() {
+  static $s3 = NULL;
+  if ($s3 == NULL) {
+    module_load_include('inc', 'amazon_s3', 's3');
+    $aws_access_key = variable_get('aws_access_key', '');
+    $aws_secret_key = variable_get('aws_secret_key', '');
+    
+    if (empty($aws_access_key) OR empty($aws_secret_key)) {
+      drupal_set_message('You must ' . l('set your aws access key and secret key', 'admin/settings/amazon-s3') . '.', 'error');
+    }
+    
+    $s3 = new S3($aws_access_key, $aws_secret_key);
+  }
+  return $s3;
+}
+
+function amazon_s3_get_buckets() {
+  $s3 = amazon_s3_get_instance();
+  return $s3->listBuckets();
+}
+
+function amazon_s3_bucket_create($bucket_name, $access_control = 'private') {
+  $s3 = amazon_s3_get_instance();
+  return $s3->putBucket($bucket_name, $access_control);
+}
+
+function amazon_s3_bucket_delete($bucket) {
+  $s3 = amazon_s3_get_instance();
+  return $s3->deleteBucket($bucket);
+}
+
+function amazon_s3_get_object_url($bucket, $object, $lifetime_in_seconds = 7200) {
+  $s3 = amazon_s3_get_instance();
+  return $s3->getAuthenticatedURL($bucket, $object, $lifetime_in_seconds);
+}
+
+function amazon_s3_object_delete($bucket, $object) {
+  $s3 = amazon_s3_get_instance();
+  return $s3->deleteObject($bucket, $object);
+}
+
+function amazon_s3_acl_options() {
+  return array(
+    'private' => 'Private',
+    'public-read' => 'Public Read',
+    'public-read-write' => 'Public Read/Write',
+    'authenticated-read' => 'Authenticated Read'
+  );
+}
+
+/*Forms*/
+function amazon_s3_bucket_create_form() {
+  $form['bucket'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Bucket Name'),
+    '#required' => TRUE,
+    '#size' => 30,
+  );
+  $form['access_control'] = array(
+    '#type' => 'select',
+    '#title' => t('Access Control'),
+    '#options' => amazon_s3_acl_options(),
+  );
+  $form['create'] = array('#type' => 'submit', '#value' => 'Create Bucket');
+  return $form;
+}
+
+function amazon_s3_bucket_create_form_submit($form, &$form_state) {
+  $s3 = amazon_s3_get_instance();
+  $bucket_name = $form_state['values']['bucket'];
+  $access_control = $form_state['values']['access_control'];
+  return amazon_s3_bucket_create($bucket_name, $access_control);
+}
+
+function amazon_s3_bucket_delete_confirm_form($form, $bucket) {
+  $form = array(
+    'bucket' => array('#type' => 'value', '#value' => $bucket),
+  );
+  $confirmation_message = t('Are you sure you want to delete the bucket %bucket?', array('%bucket' => $bucket));
+  $cancel_path = 'admin/build/amazon-s3/buckets';
+  return confirm_form($form, $confirmation_message, $cancel_path);
+}
+
+function amazon_s3_bucket_delete_confirm_form_submit($form, &$form_state) {
+  $bucket = $form_state['values']['bucket'];
+  
+  $success = amazon_s3_bucket_delete($bucket);
+  
+  if ($success) {
+    $message = t('Successfully deleted the bucket %bucket.', array('%bucket' => $bucket));
+    drupal_set_message($message);
+  }
+  else {
+    $message = t('Failed to delete the bucket %bucket.', array('%bucket' => $bucket));
+    drupal_set_message($message, 'error');
+  }
+  
+  $form_state['redirect'] = "admin/build/amazon-s3/buckets";
+}
+
+function amazon_s3_object_delete_confirm_form($form, $bucket, $object) {
+  // Decode object name to get proper url while deletion.    
+  $object = base64_decode($object);
+
+  $form = array(
+    'bucket' => array('#type' => 'value', '#value' => $bucket),
+    'object' => array('#type' => 'value', '#value' => $object),
+  );
+  $confirmation_message = t("Are you sure you want to delete the object %object from the bucket %bucket?", array('%object' => $object, '%bucket' => $bucket));
+  $cancel_path = "admin/build/amazon-s3/bucket/$bucket";
+  $form = confirm_form($form, $confirmation_message, $cancel_path);
+  return $form;
+}
+
+function amazon_s3_object_delete_confirm_form_submit($form, &$form_state) {
+  $bucket = $form_state['values']['bucket'];
+  $object = $form_state['values']['object'];
+  
+  $success = amazon_s3_object_delete($bucket, $object);
+  
+  if ($success) {
+    $message = t('Successfully deleted the object %object from the bucket %bucket', array('%object' => $object, '%bucket' => $bucket));
+    drupal_set_message($message);
+  }
+  else {
+    $message = t('Failed to delete the object %object from the bucket %bucket', array('%object' => $object, '%bucket' => $bucket));
+    drupal_set_message($message, 'error');
+  }
+  
+  $form_state['redirect'] = "admin/build/amazon-s3/bucket/$bucket";
+}
+
+function amazon_s3_file_upload_form($form, $bucket) {
+  $form = array();
+  $form['#attributes'] = array('enctype' => 'multipart/form-data');
+  $form['box'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Upload File'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  );
+  $form['box']['file'] = array(
+    '#type' => 'file',
+    '#title' => t('File to upload'),
+    '#description' => t('Pick a file to upload to the bucket %bucket.', array('%bucket' => $bucket)),
+    '#size' => 40,
+  );
+  $form['box']['acl'] = array(
+    '#type' => 'select',
+    '#title' => t('Access Control'),
+    '#options' => amazon_s3_acl_options(),
+  );
+  $form['box']['bucket'] = array('#type' => 'value', '#value' => $bucket);
+  $form['box']['upload'] = array('#type' => 'submit', '#value' => 'Upload');
+  return $form;
+}
+
+function amazon_s3_file_upload_form_submit($form, &$form_state) {
+  $s3 = amazon_s3_get_instance();
+  
+  $bucket = $form_state['values']['bucket'];
+  $upload_temp_filepath = $_FILES['files']['tmp_name']['file'];
+  $object_filename = $_FILES['files']['name']['file'];
+  $acl = $form_state['values']['acl'];
+  
+  $success = $s3->putObjectFile($upload_temp_filepath, $bucket, $object_filename, $acl);
+  
+  if ($success) {
+    $message = t('Succesfully uploaded the file %filename to the bucket %bucket.', array('%filename' => $object_filename, '%bucket' => $bucket));
+    drupal_set_message($message);
+  }
+  else {
+    $message = t('Failed to upload the file %filename to the bucket %bucket.', array('%filename' => $object_filename, '%bucket' => $bucket));
+    drupal_set_message($message, 'error');
+  }
+  
+  $form_state['redirect'] = "admin/build/amazon-s3/bucket/$bucket";
+}
+
+function amazon_s3_config_form() {
+  $form['aws_access_key'] = array(
+    '#type' => 'textfield',
+    '#default_value' => variable_get('aws_access_key', ''),
+    '#description' => t('Use your Access Key ID as the value of the AWSAccessKeyId parameter in requests you send to Amazon Web Services (when required). Your Access Key ID identifies you as the party responsible for the request.'),
+  );
+  $form['aws_secret_key'] = array(
+    '#type' => 'textfield',
+    '#default_value' => variable_get('aws_secret_key', ''),
+    '#description' => t('<p>Since your Access Key ID is not encrypted in requests to AWS, it could be discovered and used by anyone. Services that are not free require you to provide additional information, a request signature, to verify that a request containing your unique Access Key ID could only have come from you.</p>
+                        <p>You use your Secret Access Key to calculate a signature to include in requests to web services that require authenticated requests. To learn more about request signatures, including when to use them and how you calculate them, please refer to the technical documentation for the specific web service(s) you are using. </p>
+                        <p>
+                        <strong>IMPORTANT:</strong>
+                        Your Secret Access Key is a secret, and should be known only by you and AWS. You should never include your Secret Access Key in your requests to AWS. You should never e-mail your Secret Access Key to anyone. It is important to keep your Secret Access Key confidential to protect your account.
+                        </p>'),
+  );
+
+  $form['aws_bucket_name'] = array(
+    '#title' => t('Bucket Name'),
+    '#type' => 'textfield',
+    '#default_value' => variable_get('aws_bucket_name', ''),
+    '#description' => t('Bucket name to which you want to upload node files.'),
+    '#required' => TRUE,
+  );
+
+  $form['aws_cloud_url'] = array(
+    '#title' => t('Cloud Front URL'),
+    '#type' => 'textfield',
+    '#default_value' => variable_get('aws_cloud_url', ''),
+    '#description' => t('Bucket URL you want to use.'),
+  );
+
+  $form['submit'] = array('#type' => 'submit', '#value' => 'Save');
+  return $form;
+}
+
+function amazon_s3_config_form_submit($form, &$form_state) {
+  variable_set('aws_access_key', trim($form_state['values']['aws_access_key']));
+  variable_set('aws_secret_key', trim($form_state['values']['aws_secret_key']));
+  variable_set('aws_bucket_name', trim($form_state['values']['aws_bucket_name']));
+
+  // Check if cloud url is set  
+  if (isset($form_state['values']['aws_cloud_url']) && trim($form_state['values']['aws_bucket_name']) != "") {
+    variable_set('aws_cloud_url', trim($form_state['values']['aws_cloud_url']));
+  }  
+  drupal_set_message('Successfully saved changes.');
+}
+
+/*Page Callbacks for hook_menu*/
+function amazon_s3_view_buckets() {
+  $bucket_names = amazon_s3_get_buckets();
+  $buckets = array();
+  foreach ($bucket_names as $bucket_name) {
+    $buckets[] = array(
+      'name' => $bucket_name,
+      'view_objects' => l('View Objects', "admin/build/amazon-s3/bucket/$bucket_name"),
+      'delete' => l('Delete', "admin/build/amazon-s3/bucket/$bucket_name/delete"),
+    );
+  }
+  
+  $table = theme('table', array('Name', 'View Objects', 'Delete'), $buckets);
+  $bucket_create_form = drupal_get_form('amazon_s3_bucket_create_form');
+  
+  return $bucket_create_form . $table;
+}
+
+function amazon_s3_view_objects($bucket) {
+  $s3 = amazon_s3_get_instance();
+  $objects = $s3->getBucket($bucket, NULL, NULL, 100);
+
+  foreach ($objects as &$object) {
+    $object['time'] = date("F j, Y, g:i a", $object['time']);
+    $object['size'] = format_size($object['size']);
+    $object['download'] = l('Download', amazon_s3_get_object_url($bucket, $object['name']));
+
+    // Encode object name to get proper url while deletion.    
+    $obj_name = base64_encode($object['name']);
+
+    $object['delete'] = l('Delete', "admin/build/amazon-s3/bucket/$bucket/{$obj_name}/delete");
+  }
+  
+  $table = theme('table', array(
+    'Name', 'Time', 'Size', 'Hash', 'Download', 'Delete',
+  ), $objects);
+  
+  $file_upload_form = drupal_get_form('amazon_s3_file_upload_form', $bucket);
+  
+  return $file_upload_form . $table;
+}
+
+/*
+ * Implementation of hook_menu_alter()
+*/
+function amazon_s3_menu_alter(&$items) {
+  $items['upload/js'] = array(
+    'page callback' => 'amazon_s3_upload_js',
+    'access arguments' => array('upload files'),
+    'type' => MENU_CALLBACK,
+  );
+}
+
+/**
+ * Menu-callback for JavaScript-based uploads.
+ */
+function amazon_s3_upload_js() {
+  $cached_form_state = array();
+  $files = array();
+
+  // Load the form from the Form API cache.
+  if (!($cached_form = form_get_cache($_POST['form_build_id'], $cached_form_state)) || !isset($cached_form['#node']) || !isset($cached_form['attachments'])) {
+    form_set_error('form_token', t('Validation error, please try again. If this error persists, please contact the site administrator.'));
+    $output = theme('status_messages');
+    print drupal_to_js(array('status' => TRUE, 'data' => $output));
+    exit();
+  }
+
+  $form_state = array('values' => $_POST);
+
+  // Handle new uploads, and merge tmp files into node-files.
+  if (!amazon_s3_node_form_submit($cached_form, $form_state)) {
+    form_set_error('form_token', t('Validation error, please try again. If this error persists, please check your amazon s3 configuration.'));
+  }
+
+  if (!empty($form_state['values']['files'])) {
+    foreach ($form_state['values']['files'] as $fid => $file) {
+      if (isset($cached_form['#node']->files[$fid])) {
+        $files[$fid] = $cached_form['#node']->files[$fid];
+      }
+    }
+  }
+
+  $node = $cached_form['#node'];
+
+  $node->files = $files;
+
+  $form = _amazon_s3_upload_form($node);
+
+  unset($cached_form['attachments']['wrapper']['new']);
+  $cached_form['attachments']['wrapper'] = array_merge($cached_form['attachments']['wrapper'], $form);
+
+  $cached_form['attachments']['#collapsed'] = FALSE;
+
+  form_set_cache($_POST['form_build_id'], $cached_form, $cached_form_state);
+
+  foreach ($files as $fid => $file) {
+    if (is_numeric($fid)) {
+      $form['files'][$fid]['description']['#default_value'] = $form_state['values']['files'][$fid]['description'];
+      $form['files'][$fid]['list']['#default_value'] = !empty($form_state['values']['files'][$fid]['list']);
+      $form['files'][$fid]['remove']['#default_value'] = !empty($form_state['values']['files'][$fid]['remove']);
+      $form['files'][$fid]['weight']['#default_value'] = $form_state['values']['files'][$fid]['weight'];
+    }
+  }
+
+  // Render the form for output.
+  $form += array(
+    '#post' => $_POST,
+    '#programmed' => FALSE,
+    '#tree' => FALSE,
+    '#parents' => array(),
+  );
+  drupal_alter('form', $form, array(), 'amazon_s3_upload_js');
+  $form_state = array('submitted' => FALSE);
+  $form = form_builder('amazon_s3_upload_js', $form, $form_state);
+  $output = theme('status_messages') . drupal_render($form);
+
+  // We send the updated file attachments form.
+  // Don't call drupal_json(). ahah.js uses an iframe and
+  // the header output by drupal_json() causes problems in some browsers.
+  print drupal_to_js(array('status' => TRUE, 'data' => $output));
+  exit;
+}
+
+//print_r(unserialize(''));exit;
+
+/**
+ * Save new uploads and store them in the session to be associated to the node
+ * on upload_save.
+ *
+ * @param $node
+ *   A node object to associate with uploaded files.
+ */
+function amazon_s3_node_form_submit(&$form, &$form_state) {
+  global $user;
+
+  $limits = _amazon_s3_upload_file_limits($user);
+  $validators = array(
+    'file_validate_extensions' => array($limits['extensions']),
+    'file_validate_image_resolution' => array($limits['resolution']),
+    'file_validate_size' => array($limits['file_size'], $limits['user_size']),
+  );
+    // Save new file uploads.
+    if (user_access('upload files') && ($file = file_save_upload('upload', $validators, file_directory_path()))) {
+      $s3 = amazon_s3_get_instance();
+      $prefix = date('Y/m/d');
+      $existingFiles = $s3->getBucket(variable_get('aws_bucket_name', ''), $prefix);
+      if (is_array($existingFiles)) { 
+        $file->list = variable_get('upload_list_default', 1);
+
+        $fpath = $_SERVER['DOCUMENT_ROOT'] . base_path() . $file->filepath;
+        $fname = date('Y/m/d/') . $file->filename;
+        $mfilename = $fname;
+
+        $ext = '.'. substr(strrchr($fname, "."), 1);
+        $i = 0;
+        while ($mfilename) {
+           if (array_key_exists($mfilename, $existingFiles)) {
+             $mfilename = substr($fname, 0, (strlen($fname) - strlen($ext))) . "_$i" . $ext;  
+             $i++; 
+           } 
+           else {
+            $fname = $mfilename;
+            $mfilename = FALSE;
+          }
+        }
+     
+        // Set headers to upload file on s3
+        $requestHeaders['Cache-control'] = "public";
+
+        if ($s3->putObject($s3->inputResource(fopen($fpath, 'rb'), filesize($fpath)), variable_get('aws_bucket_name', ''), $fname, S3::ACL_PUBLIC_READ, array(), $requestHeaders)) {
+          // Update files table to add s3 account file path.
+          $file->filepath = $fname;
+          db_query("UPDATE {files} SET filepath = '%s' WHERE fid = %d", $fname, $file->fid);
+          if (db_affected_rows()) { 
+            file_delete($fpath);
+          }
+          $file->description = $file->filename;
+          $file->weight = 0;
+          $file->new = TRUE;
+          $form['#node']->files[$file->fid] = $file;
+          $form_state['values']['files'][$file->fid] = (array)$file;
+
+        } 
+        else {
+          file_delete($fpath);
+        }
+      } 
+      else {
+        return FALSE;
+      }
+    }
+
+  if (isset($form_state['values']['files'])) {
+    foreach ($form_state['values']['files'] as $fid => $file) {
+      // If the node was previewed prior to saving, $form['#node']->files[$fid]
+      // is an array instead of an object. Convert file to object for compatibility. 
+      $form['#node']->files[$fid] = (object) $form['#node']->files[$fid];
+      $form_state['values']['files'][$fid]['new'] = !empty($form['#node']->files[$fid]->new);
+    }
+  }
+
+  // Order the form according to the set file weight values.
+  if (!empty($form_state['values']['files'])) {
+    $microweight = 0.001;
+    foreach ($form_state['values']['files'] as $fid => $file) {
+      if (is_numeric($fid)) {
+        $form_state['values']['files'][$fid]['#weight'] = $file['weight'] + $microweight;
+        $microweight += 0.001;
+      }
+    }
+    uasort($form_state['values']['files'], 'element_sort');
+  }
+  return TRUE;
+}
+
+function _amazon_s3_upload_form($node) {
+  global $user;
+
+  $form = array(
+    '#theme' => 'amazon_s3_form_new',
+    '#cache' => TRUE,
+  );
+
+  if (!empty($node->files) && is_array($node->files)) {
+    $form['files']['#theme'] = 'amazon_s3_form_current';
+    $form['files']['#tree'] = TRUE;
+    foreach ($node->files as $key => $file) {
+      $file = (object)$file;
+      
+      // Get the bucket url.
+      /*$bucket_url = _get_bucket_url();
+      $description = $file->filepath;
+      $description = "<small>" . $bucket_url . check_plain($description) . "</small>";*/
+      $description = "<small>" . _get_file_url($file->filepath) . "</small>";
+      $form['files'][$key]['description'] = array('#type' => 'textfield', '#default_value' => !empty($file->description) ? $file->description : $file->filename, '#maxlength' => 256, '#description' => $description );
+      $form['files'][$key]['size'] = array('#value' => format_size($file->filesize));
+      $form['files'][$key]['remove'] = array('#type' => 'checkbox', '#default_value' => !empty($file->remove));
+      $form['files'][$key]['list'] = array('#type' => 'checkbox',  '#default_value' => $file->list);
+      $form['files'][$key]['weight'] = array('#type' => 'weight', '#delta' => count($node->files), '#default_value' => $file->weight);
+      $form['files'][$key]['filename'] = array('#type' => 'value',  '#value' => $file->filename);
+      $form['files'][$key]['filepath'] = array('#type' => 'value',  '#value' => $file->filepath);
+      $form['files'][$key]['filemime'] = array('#type' => 'value',  '#value' => $file->filemime);
+      $form['files'][$key]['filesize'] = array('#type' => 'value',  '#value' => $file->filesize);
+      $form['files'][$key]['fid'] = array('#type' => 'value',  '#value' => $file->fid);
+      $form['files'][$key]['new'] = array('#type' => 'value', '#value' => FALSE);
+    }
+  }
+
+  if (user_access('upload files')) {
+    $limits = _amazon_s3_upload_file_limits($user);
+    $form['new']['#weight'] = 10;
+    $form['new']['upload'] = array(
+      '#type' => 'file',
+      '#title' => t('Attach new file'),
+      '#size' => 40,
+      '#description' => ($limits['resolution'] ? t('Images are larger than %resolution will be resized. ', array('%resolution' => $limits['resolution'])) : '') . t('The maximum upload size is %filesize. Only files with the following extensions may be uploaded: %extensions. ', array('%extensions' => $limits['extensions'], '%filesize' => format_size($limits['file_size']))),
+    );
+    $form['new']['attach'] = array(
+      '#type' => 'submit',
+      '#value' => t('Attach'),
+      '#name' => 'attach',
+      '#ahah' => array(
+        'path' => 'upload/js',
+        'wrapper' => 'attach-wrapper',
+        'progress' => array('type' => 'bar', 'message' => t('Please wait...')),
+      ),
+      '#submit' => array('node_form_submit_build_node'),
+    );
+  }
+
+  return $form;
+}
+
+/**
+* Function to get the bucket url
+*/
+function _get_file_url($filepath = null) {
+  // Check if cloud url is set. Otherwise generate bucket url using bucket name.
+  $bucket_url = variable_get('aws_cloud_url', '');
+  $file_url = '';
+  if ($filepath && (strpos($filepath, 'sites/') === 0)) {
+    $file_url = file_create_url($filepath);
+  }
+  elseif (!$bucket_url) {
+    $bucket_url = 'http://' . variable_get('aws_bucket_name', '') . '.s3.amazonaws.com/';
+    $file_url = $bucket_url . $filepath;
+  }
+  else {
+    if ("/" != substr($bucket_url, -1)) {
+      $bucket_url .= "/";
+    }
+    if (strpos($bucket_url, 'http://') !== 0) {
+      $bucket_url = "http://". $bucket_url;
+    }
+    $file_url = $bucket_url . $filepath;
+  }
+  return $file_url;
+}
+
+/**
+ * Determine the limitations on files that a given user may upload. The user
+ * may be in multiple roles so we select the most permissive limitations from
+ * all of their roles.
+ *
+ * @param $user
+ *   A Drupal user object.
+ * @return
+ *   An associative array with the following keys:
+ *     'extensions'
+ *       A white space separated string containing all the file extensions this
+ *       user may upload.
+ *     'file_size'
+ *       The maximum size of a file upload in bytes.
+ *     'user_size'
+ *       The total number of bytes for all for a user's files.
+ *     'resolution'
+ *       A string specifying the maximum resolution of images.
+ */
+function _amazon_s3_upload_file_limits($user) {
+  $file_limit = variable_get('upload_uploadsize_default', 1);
+  $user_limit = variable_get('upload_usersize_default', 1);
+  $all_extensions = explode(' ', variable_get('upload_extensions_default', 'jpg jpeg gif png txt doc xls pdf ppt pps odt ods odp'));
+  foreach ($user->roles as $rid => $name) {
+    $extensions = variable_get("upload_extensions_$rid", variable_get('upload_extensions_default', 'jpg jpeg gif png txt doc xls pdf ppt pps odt ods odp'));
+    $all_extensions = array_merge($all_extensions, explode(' ', $extensions));
+
+    // A zero value indicates no limit, take the least restrictive limit.
+    $file_size = variable_get("upload_uploadsize_$rid", variable_get('upload_uploadsize_default', 1)) * 1024 * 1024;
+    $file_limit = ($file_limit && $file_size) ? max($file_limit, $file_size) : 0;
+
+    $user_size = variable_get("upload_usersize_$rid", variable_get('upload_usersize_default', 1)) * 1024 * 1024;
+    $user_limit = ($user_limit && $user_size) ? max($user_limit, $user_size) : 0;
+  }
+  $all_extensions = implode(' ', array_unique($all_extensions));
+  return array(
+    'extensions' => $all_extensions,
+    'file_size' => $file_limit,
+    'user_size' => $user_limit,
+    'resolution' => variable_get('upload_max_resolution', 0),
+  );
+}
+
+/**
+ * Implementation of hook_theme()
+ */
+function amazon_s3_theme() {
+  return array(
+  'amazon_s3_attachments' => array(
+      'arguments' => array('files' => NULL),
+    ),
+    'amazon_s3_form_current' => array(
+      'arguments' => array('form' => NULL),
+    ),
+    'amazon_s3_form_new' => array(
+      'arguments' => array('form' => NULL),
+    ),
+  );
+}
+
+/**
+ * Theme the attachments list.
+ *
+ * @ingroup themeable
+ */
+function theme_amazon_s3_form_current($form) {
+  $header = array('', t('Delete'), t('List'), t('Description'), t('Weight'), t('Size'));
+  drupal_add_tabledrag('upload-attachments', 'order', 'sibling', 'upload-weight');
+
+  foreach (element_children($form) as $key) {
+    // Add class to group weight fields for drag and drop.
+    $form[$key]['weight']['#attributes']['class'] = 'upload-weight';
+
+    $row = array('');
+    $row[] = drupal_render($form[$key]['remove']);
+    $row[] = drupal_render($form[$key]['list']);
+    $row[] = drupal_render($form[$key]['description']);
+    $row[] = drupal_render($form[$key]['weight']);
+    $row[] = drupal_render($form[$key]['size']);
+    $rows[] = array('data' => $row, 'class' => 'draggable');
+  }
+  $output = theme('table', $header, $rows, array('id' => 'upload-attachments'));
+  $output .= drupal_render($form);
+  return $output;
+}
+
+/**
+ * Theme the attachment form.
+ * Note: required to output prefix/suffix.
+ *
+ * @ingroup themeable
+ */
+function theme_amazon_s3_form_new($form) {
+  drupal_add_tabledrag('upload-attachments', 'order', 'sibling', 'upload-weight');
+  $output = drupal_render($form);
+  return $output;
+}
+
+/**
+ * Implementation of hook_nodeapi().
+ */
+function amazon_s3_nodeapi(&$node, $op, $teaser) {
+
+  switch ($op) {
+
+    case 'load':
+      $output = '';
+      if (variable_get("upload_$node->type", 1) == 1) {
+        $output['files'] = amazon_s3_load($node);
+        return $output;
+      }
+      break;
+
+    case 'view':
+      if (isset($node->files) && user_access('view uploaded files')) {
+
+        // Add the attachments list to node body with a heavy
+        // weight to ensure they're below other elements
+        if (count($node->files)) {
+          if (!$teaser && user_access('view uploaded files')) {
+            $node->content['files'] = array(
+              '#value' => theme('amazon_s3_attachments', $node->files),
+              '#weight' => 50,
+            );
+          }
+        }
+      }
+      break;
+    /*case 'insert':
+    case 'update':
+      if (user_access('upload files')) {
+        amazon_s3_upload_save($node);
+      }
+      break;*/
+  }
+
+}
+
+function amazon_s3_upload_save(&$node) {
+  if (empty($node->files) || !is_array($node->files)) {
+    return;
+  }
+
+  foreach ($node->files as $fid => $file) {
+
+    // Convert file to object for compatibility
+    $file = (object)$file;
+
+    // Remove file. Process removals first since no further processing
+    // will be required.
+    if (!empty($file->remove)) {
+      db_query('DELETE FROM {upload} WHERE fid = %d AND vid = %d', $fid, $node->vid);
+
+      // If the file isn't used by any other revisions delete it.
+      $count = db_result(db_query('SELECT COUNT(fid) FROM {upload} WHERE fid = %d', $fid));
+      if ($count < 1) {
+        file_delete($file->filepath);
+        db_query('DELETE FROM {files} WHERE fid = %d', $fid);
+      }
+
+      // Remove it from the session in the case of new uploads,
+      // that you want to disassociate before node submission.
+      unset($node->files[$fid]);
+      // Move on, so the removed file won't be added to new revisions.
+      continue;
+    }
+
+  }
+}
+
+function amazon_s3_form_alter(&$form, $form_state, $form_id) {
+  if ($form_id == 'node_type_form' && isset($form['identity']['type'])) {
+    $form['workflow']['upload'] = array(
+      '#type' => 'radios',
+      '#title' => t('Attachments'),
+      '#default_value' => variable_get('upload_'. $form['#node_type']->type, 1),
+      '#options' => array(t('Disabled'), t('Enabled')),
+    );
+  }
+
+  if (isset($form['type']) && isset($form['#node'])) {
+    $node = $form['#node'];
+    if ($form['type']['#value'] .'_node_form' == $form_id && variable_get("upload_$node->type", TRUE)) {
+      // Attachments fieldset
+      $form['attachments'] = array(
+        '#type' => 'fieldset',
+        '#access' => user_access('upload files'),
+        '#title' => t('File attachments'),
+        '#collapsible' => TRUE,
+        '#collapsed' => empty($node->files),
+        '#description' => t('Changes made to the attachments are not permanent until you save this post. The first "listed" file will be included in RSS feeds.'),
+        '#prefix' => '<div class="attachments">',
+        '#suffix' => '</div>',
+        '#weight' => 30,
+      );
+
+      // Wrapper for fieldset contents (used by ahah.js).
+      $form['attachments']['wrapper'] = array(
+        '#prefix' => '<div id="attach-wrapper">',
+        '#suffix' => '</div>',
+      );
+
+      // Make sure necessary directories for upload.module exist and are
+      // writable before displaying the attachment form.
+      $path = file_directory_path();
+      $temp = file_directory_temp();
+      // Note: pass by reference
+      if (!file_check_directory($path, FILE_CREATE_DIRECTORY) || !file_check_directory($temp, FILE_CREATE_DIRECTORY)) {
+        $form['attachments']['#description'] =  t('File attachments are disabled. The file directories have not been properly configured.');
+        if (user_access('administer site configuration')) {
+          $form['attachments']['#description'] .= ' '. t('Please visit the <a href="@admin-file-system">file system configuration page</a>.', array('@admin-file-system' => url('admin/settings/file-system')));
+        }
+        else {
+          $form['attachments']['#description'] .= ' '. t('Please contact the site administrator.');
+        }
+      }
+      else {
+        $form['attachments']['wrapper'] += _amazon_s3_upload_form($node);
+        $form['#attributes']['enctype'] = 'multipart/form-data';
+      }
+      $form['#submit'][] = 'amazon_s3_node_form_submit';
+    }
+  }
+}
+
+
+/**
+ * Displays file attachments in table
+ *
+ * @ingroup themeable
+ */
+function theme_amazon_s3_attachments($files) {
+  $header = array(t('Attachment'), t('Size'));
+  $rows = array();
+  foreach ($files as $file) {
+    $file = (object)$file;
+    if ($file->list && empty($file->remove)) {
+      $href = _get_file_url($file->filepath);
+      $text = $file->description ? $file->description : $file->filename;
+      $rows[] = array(l($text, $href), format_size($file->filesize));
+    }
+  }
+  if (count($rows)) {
+    return theme('table', $header, $rows, array('id' => 'attachments'));
+  }
+}
+
+/**
+* Function to generate list of files for the node
+*/
+function amazon_s3_load($node) {
+  $files = array();
+
+  if ($node->vid) {
+    $result = db_query('SELECT * FROM {files} f INNER JOIN {upload} r ON f.fid = r.fid WHERE r.vid = %d ORDER BY r.weight, f.fid', $node->vid);
+    while ($file = db_fetch_object($result)) {
+      $files[$file->fid] = $file;
+    }
+  }
+  return $files;
+}

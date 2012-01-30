@@ -1,0 +1,11 @@
+name = Amazon S3
+description = Provides an API for Amazon's Simple Storage Service
+
+dependencies[] = upload
+
+core = 6.x
+; Information added by drupal.org packaging script on 2009-06-18
+version = "6.x-1.0"
+core = "6.x"
+project = "amazon_s3"
+datestamp = "1245286503"
