@@ -1,0 +1,4 @@
+This is a fork of the amazon_s3 module for Drupal 6.x found here -- http://drupal.org/project/amazon_s3
+
+This fork adds the ability to upload files direct to S3 form within the Node edit view, and optionally rename the file to a CloudFront URL..
+
